@@ -11,20 +11,28 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from ahca_dashboard import aggregations as agg  # noqa: E402
 from ahca_dashboard.config import TAG_DESCRIPTIONS, TARGET_TAGS  # noqa: E402
+from ahca_dashboard import deep_analysis as deep  # noqa: E402
 from ahca_dashboard.io import load_all_regions_from_excels, load_processed_csv  # noqa: E402
 from ahca_dashboard.transform import add_citation_id, add_derived_columns, filter_to_min_year  # noqa: E402
 from ahca_dashboard.viz import (  # noqa: E402
+    fig_domain_indicator_profile,
+    fig_keyword_difference,
+    fig_keyword_profile,
     fig_pval_heatmap,
     fig_avg_word_count_region_severity,
     fig_monthly_by_region,
     fig_monthly_trend,
+    fig_region_tag_severity_heatmap,
     fig_region_counts,
+    fig_regional_divergence,
     fig_severity_by_region,
     fig_severity_pct_by_region,
     fig_severity_heatmap,
     fig_severity_violin,
     fig_state_counts,
+    fig_state_league_table,
     fig_tag_counts,
+    fig_tag_bifurcation,
     fig_tag_region_heatmap,
     fig_tag_severity,
     fig_word_count_box_by_region,
@@ -43,20 +51,28 @@ DEMO_PROCESSED_CSV = REPO_ROOT / "data" / "demo" / "analysis_dataset_demo.csv"
 
 
 @st.cache_data(show_spinner=False)
+def load_demo_dataset(demo_csv_path: str) -> pd.DataFrame:
+    df = load_processed_csv(Path(demo_csv_path))
+    if df.empty:
+        return df
+    if "inspection_year" not in df.columns or "inspection_month" not in df.columns or "word_count" not in df.columns:
+        df = add_derived_columns(df)
+    df = add_citation_id(df)
+    return df
+
+
+@st.cache_data(show_spinner=False)
 def load_dataset_from_processed(csv_path: str, demo_csv_path: str) -> tuple[pd.DataFrame, str | None]:
     df = load_processed_csv(Path(csv_path))
     dataset_note = None
     if df.empty:
         demo_path = Path(demo_csv_path)
-        demo_df = load_processed_csv(demo_path)
+        demo_df = load_demo_dataset(str(demo_path))
         if not demo_df.empty:
             df = demo_df
             dataset_note = f"Processed dataset not found at `{csv_path}`. Loaded bundled demo dataset from `{demo_path}` instead."
     if df.empty:
         return df, dataset_note
-    if "inspection_year" not in df.columns or "inspection_month" not in df.columns or "word_count" not in df.columns:
-        df = add_derived_columns(df)
-    df = add_citation_id(df)
     return df, dataset_note
 
 
@@ -101,10 +117,17 @@ if mode == "Processed CSV":
             st.warning(processed_note)
 else:
     df = load_dataset_from_raw_excel(raw_dir, min_year=min_year)
+    raw_note = None
     if df.empty:
-        st.error("No Excel files found.")
-        st.info("Point the folder to where the `*_cms_reg*.xlsx` files live.")
-        st.stop()
+        df = load_demo_dataset(str(DEMO_PROCESSED_CSV))
+        if df.empty:
+            st.error("No Excel files found.")
+            st.info("Point the folder to where the `*_cms_reg*.xlsx` files live.")
+            st.stop()
+        raw_note = f"No Excel files found at `{raw_dir}`. Loaded bundled demo dataset from `{DEMO_PROCESSED_CSV}` instead."
+    if raw_note:
+        with st.sidebar:
+            st.warning(raw_note)
 
 
 # Ensure derived columns/IDs exist even if the CSV was produced elsewhere.
@@ -115,6 +138,40 @@ df = add_citation_id(df)
 
 def _sorted_unique(series: pd.Series) -> list:
     return sorted([x for x in series.dropna().unique().tolist()])
+
+
+def _format_pct(value: float | int | None) -> str:
+    try:
+        if pd.isna(value):
+            return "n/a"
+        return f"{float(value) * 100:.1f}%"
+    except Exception:
+        return "n/a"
+
+
+def _excerpt(text: str, limit: int = 800) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "..."
+
+
+def _default_tag_pair(df_align: pd.DataFrame, sim_col: str) -> tuple[int | None, int | None]:
+    available = sorted(
+        [int(t) for t in pd.to_numeric(df_align.get("deficiency_tag", pd.Series(dtype="float64")), errors="coerce").dropna().unique().tolist()]
+    )
+    if 686 in available and 689 in available:
+        return 686, 689
+    return deep.notebook_default_tags(df_align, sim_col)
+
+
+def _domain_summary_text(domain_df: pd.DataFrame) -> str:
+    if domain_df.empty:
+        return "No domain signal"
+    top_row = domain_df.sort_values("count", ascending=False).iloc[0]
+    if int(top_row["count"]) == 0:
+        return "No tracked domain terms"
+    return str(top_row["domain"])
 
 
 with st.sidebar:
@@ -168,7 +225,7 @@ else:
     col4.metric("Text Available %", "n/a")
 
 
-tab_overview, tab_severity, tab_tags, tab_text, tab_time, tab_alignment, tab_drilldown, tab_tables = st.tabs(
+tab_overview, tab_severity, tab_tags, tab_text, tab_time, tab_alignment, tab_tag_severity, tab_keywords, tab_domain, tab_drilldown, tab_tables = st.tabs(
     [
         "Overview",
         "Severity",
@@ -176,6 +233,9 @@ tab_overview, tab_severity, tab_tags, tab_text, tab_time, tab_alignment, tab_dri
         "Text",
         "Time & State",
         "Regulatory Alignment",
+        "Tag x Severity",
+        "Keyword Comparison",
+        "Domain Evidence",
         "Citation Analysis",
         "Tables",
     ]
@@ -575,6 +635,356 @@ with tab_alignment:
                 fig.update_yaxes(type="category", categoryorder="array", categoryarray=y_tags)
                 fig.update_xaxes(type="category", categoryorder="array", categoryarray=x_states)
                 st.plotly_chart(fig, width="stretch")
+
+with tab_tag_severity:
+    st.caption(
+        "Notebook v2 addition: breaks regulatory alignment down by CMS region, deficiency tag, and J/K/L severity to surface recurring problem combinations."
+    )
+
+    df_align = st.session_state.get("df_align")
+    sim_col = st.session_state.get("sim_col", "tfidf_sim")
+
+    if df_align is None or sim_col not in df_align.columns:
+        st.warning("Compute similarity in the Regulatory Alignment tab first to enable the Tag x Severity analysis.")
+    else:
+        combo_stats = deep.tag_severity_alignment_by_region(df_align, sim_col)
+        tag_rank = deep.tag_ranking(df_align, sim_col)
+        severity_rank = deep.severity_ranking(df_align, sim_col)
+        region_spread = deep.regional_divergence(combo_stats)
+        state_stats = deep.state_alignment_summary(df_align, sim_col)
+
+        if combo_stats.empty:
+            st.info("No tag-by-severity combinations are available for the current filtered dataset.")
+        else:
+            critical_threshold = st.slider(
+                "Critical similarity threshold",
+                min_value=0.20,
+                max_value=0.60,
+                value=0.40,
+                step=0.01,
+                key="tag_severity_critical_threshold",
+            )
+            critical_df = deep.critical_combinations(combo_stats, threshold=float(critical_threshold))
+            worst_combo = combo_stats.nsmallest(1, "alignment_mean").iloc[0]
+            best_combo = combo_stats.nlargest(1, "alignment_mean").iloc[0]
+            avg_spread = float(region_spread["spread"].mean()) if not region_spread.empty else float("nan")
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(
+                "Worst combo",
+                f"R{int(worst_combo['region'])} / F-0{int(worst_combo['tag'])} / {worst_combo['severity']}",
+                _format_pct(worst_combo["alignment_mean"]),
+            )
+            c2.metric(
+                "Best combo",
+                f"R{int(best_combo['region'])} / F-0{int(best_combo['tag'])} / {best_combo['severity']}",
+                _format_pct(best_combo["alignment_mean"]),
+            )
+            c3.metric("Critical combos", f"{len(critical_df):,}", f"< {_format_pct(critical_threshold)}")
+            c4.metric("Avg regional spread", _format_pct(avg_spread))
+
+            left, right = st.columns(2)
+            with left:
+                st.plotly_chart(fig_tag_bifurcation(tag_rank), width="stretch")
+            with right:
+                st.plotly_chart(fig_regional_divergence(region_spread), width="stretch")
+
+            detail_cols = st.columns([1.2, 1])
+            regions_available = sorted([int(r) for r in combo_stats["region"].dropna().unique().tolist()])
+            selected_region = detail_cols[0].selectbox(
+                "Region detail",
+                options=regions_available,
+                index=0,
+                key="tag_severity_region_detail",
+            )
+            region_pivot = deep.region_tag_severity_pivot(combo_stats, int(selected_region))
+            with detail_cols[0]:
+                st.plotly_chart(fig_region_tag_severity_heatmap(region_pivot, int(selected_region)), width="stretch")
+            with detail_cols[1]:
+                st.plotly_chart(fig_state_league_table(state_stats), width="stretch")
+
+            table_a, table_b, table_c = st.columns(3)
+            with table_a:
+                st.subheader("Problem Combos by Region")
+                st.dataframe(
+                    deep.regional_problem_tags(combo_stats, top_n=3)
+                    .rename(
+                        columns={
+                            "region": "Region",
+                            "rank": "Rank",
+                            "tag_label": "Tag",
+                            "severity": "Severity",
+                            "alignment_mean": "Mean similarity",
+                            "citation_count": "Citations",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with table_b:
+                st.subheader("Severity Ranking")
+                st.dataframe(
+                    severity_rank.rename(
+                        columns={
+                            "severity": "Severity",
+                            "severity_name": "Description",
+                            "alignment_mean": "Mean similarity",
+                            "alignment_std": "Std dev",
+                            "citation_count": "Citations",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with table_c:
+                st.subheader("Critical Combos")
+                if critical_df.empty:
+                    st.info("No region/tag/severity combinations fall below the selected threshold.")
+                else:
+                    st.dataframe(
+                        critical_df.rename(
+                            columns={
+                                "region": "Region",
+                                "tag_label": "Tag",
+                                "severity": "Severity",
+                                "alignment_mean": "Mean similarity",
+                                "alignment_std": "Std dev",
+                                "citation_count": "Citations",
+                            }
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                    )
+
+with tab_keywords:
+    st.caption(
+        "Notebook v2 addition: compares the language of lower- and higher-alignment tags using TF-IDF to identify differentiating words and phrases."
+    )
+
+    df_align = st.session_state.get("df_align")
+    sim_col = st.session_state.get("sim_col", "tfidf_sim")
+
+    if df_align is None or sim_col not in df_align.columns:
+        st.warning("Compute similarity in the Regulatory Alignment tab first to enable keyword comparison.")
+    else:
+        available_tags = sorted(
+            [int(t) for t in pd.to_numeric(df_align.get("deficiency_tag", pd.Series(dtype="float64")), errors="coerce").dropna().unique().tolist()]
+        )
+        if not available_tags:
+            st.info("No tags are available in the current alignment dataset.")
+        else:
+            default_tag_a, default_tag_b = _default_tag_pair(df_align, sim_col)
+            default_tag_a = default_tag_a if default_tag_a in available_tags else available_tags[0]
+            default_tag_b = default_tag_b if default_tag_b in available_tags else available_tags[-1]
+
+            k1, k2 = st.columns(2)
+            tag_a = k1.selectbox(
+                "Lower-alignment tag",
+                options=available_tags,
+                index=available_tags.index(default_tag_a),
+                format_func=lambda x: f"F-0{x}",
+                key="keyword_tag_a",
+            )
+            tag_b = k2.selectbox(
+                "Higher-alignment tag",
+                options=available_tags,
+                index=available_tags.index(default_tag_b),
+                format_func=lambda x: f"F-0{x}",
+                key="keyword_tag_b",
+            )
+
+            if tag_a == tag_b:
+                st.info("Choose two different tags to compare their language profiles.")
+            else:
+                try:
+                    keyword_result = deep.keyword_comparison(df_align, sim_col, int(tag_a), int(tag_b))
+                except RuntimeError as e:
+                    st.info(str(e))
+                else:
+                    stats = keyword_result["stats"] or {}
+                    mean_a = stats.get("tag_a_mean")
+                    mean_b = stats.get("tag_b_mean")
+                    count_a = stats.get("tag_a_count", 0)
+                    count_b = stats.get("tag_b_count", 0)
+                    gap = float(mean_b - mean_a) if pd.notna(mean_a) and pd.notna(mean_b) else float("nan")
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric(f"F-0{int(tag_a)} mean similarity", _format_pct(mean_a), f"{int(count_a):,} citations")
+                    m2.metric(f"F-0{int(tag_b)} mean similarity", _format_pct(mean_b), f"{int(count_b):,} citations")
+                    m3.metric("Gap", _format_pct(gap))
+
+                    a, b = st.columns(2)
+                    with a:
+                        st.plotly_chart(
+                            fig_keyword_profile(
+                                keyword_result["profile_a"],
+                                title=f"Top TF-IDF Terms for F-0{int(tag_a)}",
+                                color="#b22222",
+                            ),
+                            width="stretch",
+                        )
+                    with b:
+                        st.plotly_chart(
+                            fig_keyword_profile(
+                                keyword_result["profile_b"],
+                                title=f"Top TF-IDF Terms for F-0{int(tag_b)}",
+                                color="#2f855a",
+                            ),
+                            width="stretch",
+                        )
+
+                    st.plotly_chart(
+                        fig_keyword_difference(
+                            keyword_result["shared_diff"],
+                            title=f"Shared Terms with the Largest TF-IDF Advantage for F-0{int(tag_a)}",
+                        ),
+                        width="stretch",
+                    )
+
+                    u1, u2 = st.columns(2)
+                    with u1:
+                        st.subheader(f"Terms Unique to F-0{int(tag_a)}")
+                        st.dataframe(keyword_result["unique_a"], width="stretch", hide_index=True)
+                    with u2:
+                        st.subheader(f"Terms Unique to F-0{int(tag_b)}")
+                        st.dataframe(keyword_result["unique_b"], width="stretch", hide_index=True)
+
+                    st.subheader("Notebook Heuristic: Expansion vs Reduction Terms")
+                    st.dataframe(stats.get("pattern_counts", pd.DataFrame()), width="stretch", hide_index=True)
+
+with tab_domain:
+    st.caption(
+        "Notebook v2 addition: tests the domain-mismatch hypothesis with representative citations, notebook-specific vocabulary families, and Appendix PP baseline text when available."
+    )
+    st.caption("This framing is most interpretable for the notebook's original comparison of F-0686 vs F-0689.")
+
+    df_align = st.session_state.get("df_align")
+    sim_col = st.session_state.get("sim_col", "tfidf_sim")
+
+    if df_align is None or sim_col not in df_align.columns:
+        st.warning("Compute similarity in the Regulatory Alignment tab first to enable the domain evidence view.")
+    else:
+        available_tags = sorted(
+            [int(t) for t in pd.to_numeric(df_align.get("deficiency_tag", pd.Series(dtype="float64")), errors="coerce").dropna().unique().tolist()]
+        )
+        if not available_tags:
+            st.info("No tags are available in the current alignment dataset.")
+        else:
+            default_left, default_right = _default_tag_pair(df_align, sim_col)
+            default_left = default_left if default_left in available_tags else available_tags[0]
+            default_right = default_right if default_right in available_tags else available_tags[-1]
+
+            d1, d2 = st.columns(2)
+            tag_left = d1.selectbox(
+                "Tag A",
+                options=available_tags,
+                index=available_tags.index(default_left),
+                format_func=lambda x: f"F-0{x}",
+                key="domain_tag_left",
+            )
+            tag_right = d2.selectbox(
+                "Tag B",
+                options=available_tags,
+                index=available_tags.index(default_right),
+                format_func=lambda x: f"F-0{x}",
+                key="domain_tag_right",
+            )
+
+            if tag_left == tag_right:
+                st.info("Choose two different tags to compare their domain evidence.")
+            else:
+                try:
+                    domain_result = deep.keyword_comparison(df_align, sim_col, int(tag_left), int(tag_right))
+                except RuntimeError as e:
+                    st.info(str(e))
+                else:
+                    profile_left = domain_result["profile_a"]
+                    profile_right = domain_result["profile_b"]
+                    domain_counts = pd.concat(
+                        [
+                            deep.domain_indicator_summary(profile_left, int(tag_left)),
+                            deep.domain_indicator_summary(profile_right, int(tag_right)),
+                        ],
+                        ignore_index=True,
+                    )
+                    st.plotly_chart(fig_domain_indicator_profile(domain_counts), width="stretch")
+
+                    unique_left = deep.domain_unique_terms(profile_left, profile_right, domain="wound")
+                    unique_right = deep.domain_unique_terms(profile_right, profile_left, domain="behavioral")
+                    worst_left, best_left = deep.tag_examples(df_align, sim_col, int(tag_left))
+                    worst_right, best_right = deep.tag_examples(df_align, sim_col, int(tag_right))
+
+                    left_baseline = deep.baseline_text_for_tag(baseline_df, int(tag_left)) if baseline_df is not None else ""
+                    right_baseline = deep.baseline_text_for_tag(baseline_df, int(tag_right)) if baseline_df is not None else ""
+
+                    card_left, card_right = st.columns(2)
+                    with card_left:
+                        st.subheader(f"F-0{int(tag_left)}")
+                        left_domain = domain_counts[domain_counts["tag"] == int(tag_left)]
+                        left_mean = (domain_result["stats"] or {}).get("tag_a_mean")
+                        st.metric("Mean similarity", _format_pct(left_mean))
+                        st.metric("Dominant notebook vocabulary", _domain_summary_text(left_domain))
+                        st.dataframe(unique_left, width="stretch", hide_index=True)
+                        if worst_left is not None:
+                            st.text_area(
+                                "Lowest-alignment citation",
+                                value=_excerpt(str(worst_left.get("inspection_text", ""))),
+                                height=180,
+                                key=f"domain_worst_{int(tag_left)}",
+                            )
+                        if best_left is not None:
+                            st.text_area(
+                                "Highest-alignment citation",
+                                value=_excerpt(str(best_left.get("inspection_text", ""))),
+                                height=180,
+                                key=f"domain_best_{int(tag_left)}",
+                            )
+                        st.text_area(
+                            "Appendix PP baseline text",
+                            value=_excerpt(left_baseline) if left_baseline else "Baseline text not found for this tag.",
+                            height=180,
+                            key=f"domain_baseline_{int(tag_left)}",
+                        )
+                        if worst_left is not None and left_baseline:
+                            st.dataframe(
+                                deep.citation_vs_baseline_overlap(str(worst_left.get("inspection_text", "")), left_baseline),
+                                width="stretch",
+                                hide_index=True,
+                            )
+
+                    with card_right:
+                        st.subheader(f"F-0{int(tag_right)}")
+                        right_domain = domain_counts[domain_counts["tag"] == int(tag_right)]
+                        right_mean = (domain_result["stats"] or {}).get("tag_b_mean")
+                        st.metric("Mean similarity", _format_pct(right_mean))
+                        st.metric("Dominant notebook vocabulary", _domain_summary_text(right_domain))
+                        st.dataframe(unique_right, width="stretch", hide_index=True)
+                        if worst_right is not None:
+                            st.text_area(
+                                "Lowest-alignment citation",
+                                value=_excerpt(str(worst_right.get("inspection_text", ""))),
+                                height=180,
+                                key=f"domain_worst_{int(tag_right)}",
+                            )
+                        if best_right is not None:
+                            st.text_area(
+                                "Highest-alignment citation",
+                                value=_excerpt(str(best_right.get("inspection_text", ""))),
+                                height=180,
+                                key=f"domain_best_{int(tag_right)}",
+                            )
+                        st.text_area(
+                            "Appendix PP baseline text",
+                            value=_excerpt(right_baseline) if right_baseline else "Baseline text not found for this tag.",
+                            height=180,
+                            key=f"domain_baseline_{int(tag_right)}",
+                        )
+                        if worst_right is not None and right_baseline:
+                            st.dataframe(
+                                deep.citation_vs_baseline_overlap(str(worst_right.get("inspection_text", "")), right_baseline),
+                                width="stretch",
+                                hide_index=True,
+                            )
 
 with tab_drilldown:
     st.caption("Analyze a single citation (by citation number) and compare its inspection text to the Appendix PP baseline text for its F-tag.")
