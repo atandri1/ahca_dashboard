@@ -2,6 +2,8 @@
 
 Streamlit dashboard for exploring regulatory citation data.
 
+Live app: https://ahca-dashboard.streamlit.app/
+
 ## Quickstart
 
 1. Install dependencies (Python 3.10+):
@@ -31,6 +33,8 @@ Streamlit dashboard for exploring regulatory citation data.
    streamlit run streamlit_app.py
    ```
 
+If the expected processed CSV or raw Excel inputs are unavailable, the app falls back to a bundled demo processed CSV so the dashboard can still open.
+
 ## Input Data
 
 ### Raw Excel Files
@@ -51,3 +55,4 @@ Running the build script creates:
 If you already have a processed dataset, place it at `data/processed/analysis_dataset_jkl_top10tags.csv`. The app can also
 load a CSV from any path you provide in the sidebar.
 
+If neither the processed CSV nor the raw Excel inputs are available, the app uses the bundled demo file at `data/demo/analysis_dataset_demo.csv`.
