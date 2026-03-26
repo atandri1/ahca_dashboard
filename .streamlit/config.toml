@@ -1,0 +1,20 @@
+[theme]
+primaryColor = "#0d6efd"              # Bootstrap 5's primary blue
+backgroundColor = "#ffffff"           # Pure white - Bootstrap's foundation
+secondaryBackgroundColor = "#f8f9fa"  # Bootstrap's gray-50
+textColor = "#212529"                 # Bootstrap's body text color
+linkColor = "#0d6efd"                 # Bootstrap primary for links
+borderColor = "#dee2e6"               # Bootstrap's border-color
+font = "sans-serif"
+
+
+[server]
+headless = true
+enableCORS = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[browser]
+gatherUsageStats = false
