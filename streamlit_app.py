@@ -120,7 +120,18 @@ def _sorted_unique(series: pd.Series) -> list:
 with st.sidebar:
     years = _sorted_unique(df["inspection_year"]) if "inspection_year" in df.columns else []
     if years:
-        year_min, year_max = st.slider("Inspection year", min_value=int(min(years)), max_value=int(max(years)), value=(int(min(years)), int(max(years))))
+        year_values = sorted({int(y) for y in years if pd.notna(y)})
+        if len(year_values) == 1:
+            year_min = year_values[0]
+            year_max = year_values[0]
+            st.caption(f"Inspection year: {year_values[0]}")
+        else:
+            year_min, year_max = st.slider(
+                "Inspection year",
+                min_value=year_values[0],
+                max_value=year_values[-1],
+                value=(year_values[0], year_values[-1]),
+            )
     else:
         year_min, year_max = (None, None)
 
