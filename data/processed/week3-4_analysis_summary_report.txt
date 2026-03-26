@@ -1,0 +1,75 @@
+================================================================================
+WEEKS 3-4 ANALYSIS SUMMARY REPORT
+Consistency Analysis & Regulatory Alignment
+================================================================================
+
+RESEARCH QUESTION 1: REGIONAL CONSISTENCY
+--------------------------------------------------------------------------------
+Question: How consistently are IJ citations written within each region?
+
+Key Findings:
+  • Region 6: 0.6566 (±0.0663)
+  • Region 3: 0.6266 (±0.0677)
+  • Region 7: 0.6179 (±0.0730)
+
+Overall Average Consistency: 0.6057
+
+RESEARCH QUESTION 2: REGULATORY ALIGNMENT
+--------------------------------------------------------------------------------
+Question: How closely do citations align with CMS Appendix PP language?
+
+Key Findings:
+  • Region 3: 0.4993 (±0.0998)
+  • Region 8: 0.4594 (±0.0957)
+  • Region 6: 0.4561 (±0.0912)
+
+Overall Average Alignment: 0.4453
+
+Tags with Best Alignment:
+  • F-0689: 0.4934
+  • F-0760: 0.4809
+  • F-0610: 0.4722
+
+RESEARCH QUESTION 3: SYSTEMATIC REGIONAL DIFFERENCES
+--------------------------------------------------------------------------------
+Question: Do regions differ systematically in citation practices?
+
+Statistical Test Results (ANOVA):
+  • Alignment Scores: F=32.2333, p=0.000000
+    → SIGNIFICANT ✅ (Regional differences are real, not random)
+
+  • Consistency Scores: F=0.7393, p=0.671940
+    → NOT SIGNIFICANT (Differences could be due to chance)
+
+KEY INSIGHTS
+--------------------------------------------------------------------------------
+1. Distribution of Alignment Scores:
+   • High alignment (≥0.75): 0 citations (0.0%)
+   • Medium alignment (0.50-0.75): 2,064 citations (30.3%)
+   • Low alignment (<0.50): 4,753 citations (69.7%)
+
+2. Regional Patterns:
+   • Most consistent region: Region 6 (0.6566)
+   • Best aligned region: Region 3 (0.4993)
+
+3. AI Approach Effectiveness:
+   ✅ Sentence Transformers + Cosine Similarity successfully:
+      - Quantified citation consistency within regions
+      - Measured alignment with regulatory standards
+      - Identified systematic regional differences
+      - Provided statistical validation (ANOVA)
+
+NEXT STEPS
+--------------------------------------------------------------------------------
+Weeks 5-6: Regulatory Alignment Deep-Dive
+  • Identify specific areas where citations deviate from regulations
+  • Classify deviation types (expansion/reduction/reinterpretation)
+  • Create actionable recommendations for AHCA
+
+Weeks 7-8: Compare 3 AI Approaches
+  • Test fine-tuned domain-specific models
+  • Test LLM-based approaches (GPT-4/Claude)
+  • Compare quality, speed, cost
+  • Recommend best approach for AHCA
+
+================================================================================

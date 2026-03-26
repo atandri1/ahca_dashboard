@@ -23,8 +23,8 @@ Thumbs.db
 .streamlit/secrets.toml
 
 # Data (keep folders, ignore contents)
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
+#data/raw/*
+#data/processed/*
+#!data/raw/.gitkeep
+#!data/processed/.gitkeep
 
