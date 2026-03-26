@@ -165,15 +165,6 @@ def _default_tag_pair(df_align: pd.DataFrame, sim_col: str) -> tuple[int | None,
     return deep.notebook_default_tags(df_align, sim_col)
 
 
-def _domain_summary_text(domain_df: pd.DataFrame) -> str:
-    if domain_df.empty:
-        return "No domain signal"
-    top_row = domain_df.sort_values("count", ascending=False).iloc[0]
-    if int(top_row["count"]) == 0:
-        return "No tracked domain terms"
-    return str(top_row["domain"])
-
-
 with st.sidebar:
     years = _sorted_unique(df["inspection_year"]) if "inspection_year" in df.columns else []
     if years:
@@ -909,8 +900,8 @@ with tab_domain:
                     )
                     st.plotly_chart(fig_domain_indicator_profile(domain_counts), width="stretch")
 
-                    unique_left = deep.domain_unique_terms(profile_left, profile_right, domain="wound")
-                    unique_right = deep.domain_unique_terms(profile_right, profile_left, domain="behavioral")
+                    unique_left = deep.domain_unique_terms(profile_left, profile_right)
+                    unique_right = deep.domain_unique_terms(profile_right, profile_left)
                     worst_left, best_left = deep.tag_examples(df_align, sim_col, int(tag_left))
                     worst_right, best_right = deep.tag_examples(df_align, sim_col, int(tag_right))
 
@@ -920,10 +911,14 @@ with tab_domain:
                     card_left, card_right = st.columns(2)
                     with card_left:
                         st.subheader(f"F-0{int(tag_left)}")
-                        left_domain = domain_counts[domain_counts["tag"] == int(tag_left)]
                         left_mean = (domain_result["stats"] or {}).get("tag_a_mean")
+                        left_note = deep.dominant_domain_note(unique_left)
                         st.metric("Mean similarity", _format_pct(left_mean))
-                        st.metric("Dominant notebook vocabulary", _domain_summary_text(left_domain))
+                        st.metric(
+                            "Dominant notebook vocabulary",
+                            str(left_note["label"]),
+                            f"{int(left_note['count'])}/{int(left_note['total_terms'])} unique terms",
+                        )
                         st.dataframe(unique_left, width="stretch", hide_index=True)
                         if worst_left is not None:
                             st.text_area(
@@ -954,10 +949,14 @@ with tab_domain:
 
                     with card_right:
                         st.subheader(f"F-0{int(tag_right)}")
-                        right_domain = domain_counts[domain_counts["tag"] == int(tag_right)]
                         right_mean = (domain_result["stats"] or {}).get("tag_b_mean")
+                        right_note = deep.dominant_domain_note(unique_right)
                         st.metric("Mean similarity", _format_pct(right_mean))
-                        st.metric("Dominant notebook vocabulary", _domain_summary_text(right_domain))
+                        st.metric(
+                            "Dominant notebook vocabulary",
+                            str(right_note["label"]),
+                            f"{int(right_note['count'])}/{int(right_note['total_terms'])} unique terms",
+                        )
                         st.dataframe(unique_right, width="stretch", hide_index=True)
                         if worst_right is not None:
                             st.text_area(

@@ -316,16 +316,53 @@ def domain_indicator_summary(profile: pd.DataFrame, tag: int, top_n: int = 30) -
     )
 
 
-def domain_unique_terms(profile_primary: pd.DataFrame, profile_other: pd.DataFrame, *, domain: str) -> pd.DataFrame:
+def infer_domain_family(profile: pd.DataFrame, top_n: int = 30) -> str:
+    if profile.empty:
+        return "generic"
+    top_words = set(profile.head(top_n)["word"].tolist())
+    wound_count = sum(1 for word in top_words if word in WOUND_CARE_INDICATORS)
+    behavioral_count = sum(1 for word in top_words if word in BEHAVIORAL_SAFETY_INDICATORS)
+    if wound_count == 0 and behavioral_count == 0:
+        return "generic"
+    return "wound" if wound_count >= behavioral_count else "behavioral"
+
+
+def domain_unique_terms(profile_primary: pd.DataFrame, profile_other: pd.DataFrame, *, domain: str | None = None) -> pd.DataFrame:
     if profile_primary.empty:
         return pd.DataFrame(columns=["word", "tfidf_score", "domain_note"])
     other_words = set(profile_other["word"]) if not profile_other.empty else set()
     unique_terms = profile_primary[~profile_primary["word"].isin(other_words)].copy().head(20)
+    domain = infer_domain_family(profile_primary) if domain is None else domain
     if domain == "wound":
         unique_terms["domain_note"] = unique_terms["word"].map(WOUND_CARE_INDICATORS).fillna("medical / clinical")
-    else:
+    elif domain == "behavioral":
         unique_terms["domain_note"] = unique_terms["word"].map(BEHAVIORAL_SAFETY_INDICATORS).fillna("behavioral / safety")
+    else:
+        all_notes = {**WOUND_CARE_INDICATORS, **BEHAVIORAL_SAFETY_INDICATORS}
+        unique_terms["domain_note"] = unique_terms["word"].map(all_notes).fillna("notebook uncategorized")
     return unique_terms.reset_index(drop=True)
+
+
+def dominant_domain_note(unique_terms: pd.DataFrame) -> dict[str, object]:
+    if unique_terms.empty or "domain_note" not in unique_terms.columns:
+        return {"label": "No domain note", "count": 0, "total_terms": 0}
+
+    summary = (
+        unique_terms.dropna(subset=["domain_note"])
+        .groupby("domain_note")
+        .agg(term_count=("domain_note", "size"), total_tfidf=("tfidf_score", "sum"))
+        .reset_index()
+        .sort_values(["term_count", "total_tfidf", "domain_note"], ascending=[False, False, True])
+    )
+    if summary.empty:
+        return {"label": "No domain note", "count": 0, "total_terms": 0}
+
+    top_row = summary.iloc[0]
+    return {
+        "label": str(top_row["domain_note"]),
+        "count": int(top_row["term_count"]),
+        "total_terms": int(summary["term_count"].sum()),
+    }
 
 
 def baseline_text_for_tag(baseline_df: pd.DataFrame | None, tag: int) -> str:
