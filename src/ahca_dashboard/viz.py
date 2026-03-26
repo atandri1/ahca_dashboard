@@ -419,12 +419,23 @@ def fig_domain_indicator_profile(domain_df: pd.DataFrame) -> go.Figure:
         return go.Figure()
     df = domain_df.copy()
     df["tag_label"] = df["tag"].apply(lambda x: f"F-0{int(x)}")
-    return px.bar(
-        df,
-        x="tag_label",
-        y="count",
-        color="domain",
-        barmode="group",
-        title="Domain Indicator Counts in Top 30 Terms",
-        labels={"tag_label": "Deficiency Tag", "count": "Matched top terms", "domain": "Indicator family"},
+    domain_order = (
+        df.groupby("domain")["count"]
+        .sum()
+        .sort_values(ascending=True)
+        .index.tolist()
     )
+    fig = px.bar(
+        df,
+        x="count",
+        y="domain",
+        color="tag_label",
+        barmode="group",
+        orientation="h",
+        title="Domain Note Counts in Top 30 Terms",
+        labels={"tag_label": "Deficiency Tag", "count": "Matched top terms", "domain": "Notebook domain note"},
+        category_orders={"domain": domain_order},
+    )
+    fig.update_layout(height=max(420, min(1200, 28 * len(domain_order) + 120)))
+    fig.update_traces(hovertemplate="%{fullData.name}<br>%{y}<br>Matched terms: %{x}<extra></extra>")
+    return fig

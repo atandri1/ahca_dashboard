@@ -79,6 +79,8 @@ BEHAVIORAL_SAFETY_INDICATORS = {
     "behavioral": "behavioral - behavior management",
 }
 
+ALL_DOMAIN_INDICATORS = {**WOUND_CARE_INDICATORS, **BEHAVIORAL_SAFETY_INDICATORS}
+
 
 def alignment_working_frame(df: pd.DataFrame, sim_col: str) -> pd.DataFrame:
     if df.empty or sim_col not in df.columns:
@@ -301,19 +303,21 @@ def keyword_comparison(df: pd.DataFrame, sim_col: str, tag_a: int, tag_b: int) -
 
 def domain_indicator_summary(profile: pd.DataFrame, tag: int, top_n: int = 30) -> pd.DataFrame:
     if profile.empty:
-        return pd.DataFrame(
-            [{"tag": int(tag), "domain": "Wound care vocabulary", "count": 0}, {"tag": int(tag), "domain": "Behavioral/safety vocabulary", "count": 0}]
-        )
+        return pd.DataFrame(columns=["tag", "domain", "count"])
 
-    top_words = set(profile.head(top_n)["word"].tolist())
-    wound_count = sum(1 for word in top_words if word in WOUND_CARE_INDICATORS)
-    behavioral_count = sum(1 for word in top_words if word in BEHAVIORAL_SAFETY_INDICATORS)
-    return pd.DataFrame(
-        [
-            {"tag": int(tag), "domain": "Wound care vocabulary", "count": wound_count},
-            {"tag": int(tag), "domain": "Behavioral/safety vocabulary", "count": behavioral_count},
-        ]
+    top_terms = profile.head(top_n).copy()
+    if top_terms.empty:
+        return pd.DataFrame(columns=["tag", "domain", "count"])
+
+    top_terms["domain"] = top_terms["word"].map(ALL_DOMAIN_INDICATORS).fillna("notebook uncategorized")
+    summary = (
+        top_terms.groupby("domain")
+        .size()
+        .reset_index(name="count")
+        .sort_values(["count", "domain"], ascending=[False, True])
     )
+    summary["tag"] = int(tag)
+    return summary[["tag", "domain", "count"]]
 
 
 def infer_domain_family(profile: pd.DataFrame, top_n: int = 30) -> str:
@@ -338,8 +342,7 @@ def domain_unique_terms(profile_primary: pd.DataFrame, profile_other: pd.DataFra
     elif domain == "behavioral":
         unique_terms["domain_note"] = unique_terms["word"].map(BEHAVIORAL_SAFETY_INDICATORS).fillna("behavioral / safety")
     else:
-        all_notes = {**WOUND_CARE_INDICATORS, **BEHAVIORAL_SAFETY_INDICATORS}
-        unique_terms["domain_note"] = unique_terms["word"].map(all_notes).fillna("notebook uncategorized")
+        unique_terms["domain_note"] = unique_terms["word"].map(ALL_DOMAIN_INDICATORS).fillna("notebook uncategorized")
     return unique_terms.reset_index(drop=True)
 
 
