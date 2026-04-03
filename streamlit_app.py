@@ -1297,3 +1297,4 @@ with tab_drilldown:
             _render_citation_panel(payload_left, error_left)
         with compare_right:
             _render_citation_panel(payload_right, error_right)
+
