@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 import sys
 from pathlib import Path
 
@@ -154,6 +156,148 @@ def _excerpt(text: str, limit: int = 800) -> str:
     if len(value) <= limit:
         return value
     return value[:limit].rstrip() + "..."
+
+
+def _normalize_numeric_token(tok: str) -> str:
+    tok = str(tok or "").strip()
+    if not tok:
+        return tok
+
+    # Common user inputs for tags: "F0688", "F-0688"
+    if tok.upper().startswith("F"):
+        tok = tok[1:].lstrip("-").strip()
+
+    try:
+        f = float(tok)
+        if f.is_integer():
+            return str(int(f))
+    except Exception:
+        pass
+
+    if tok.endswith(".0"):
+        tok = tok[:-2]
+    if tok.isdigit():
+        return str(int(tok))
+    return tok
+
+
+def _normalize_citation_number(s: str) -> str:
+    s = str(s or "").strip()
+    parts = s.split("_")
+    if len(parts) < 4:
+        return s
+    normalized = [_normalize_numeric_token(part) for part in parts[:4]]
+    return "_".join(normalized)
+
+
+def _citation_examples(df_align: pd.DataFrame) -> tuple[str, str]:
+    if "citation_id" not in df_align.columns:
+        return "", ""
+
+    examples: list[str] = []
+    for citation_id in df_align["citation_id"].dropna().astype(str).unique().tolist():
+        normalized = _normalize_citation_number(citation_id)
+        if normalized and normalized not in examples:
+            examples.append(normalized)
+        if len(examples) == 2:
+            break
+
+    if not examples:
+        return "", ""
+    if len(examples) == 1:
+        return examples[0], examples[0]
+    return examples[0], examples[1]
+
+
+def _citation_lookup(df_align: pd.DataFrame) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    if "citation_id" not in df_align.columns:
+        return lookup
+
+    for citation_id in df_align["citation_id"].dropna().astype(str).unique().tolist():
+        normalized = _normalize_citation_number(citation_id)
+        if normalized:
+            lookup.setdefault(normalized, citation_id)
+    return lookup
+
+
+def _lookup_citation_row(df_align: pd.DataFrame, citation_number: str, lookup: dict[str, str]) -> pd.Series | None:
+    if "citation_id" not in df_align.columns:
+        return None
+    normalized = _normalize_citation_number(citation_number)
+    orig_id = lookup.get(normalized)
+    if not orig_id:
+        return None
+    matches = df_align[df_align["citation_id"].astype(str) == orig_id]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def _parse_search_terms(search_text: str) -> list[str]:
+    if not search_text:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw_term in re.split(r"[,;\n]+", search_text):
+        term = str(raw_term or "").strip()
+        if not term:
+            continue
+        key = term.casefold()
+        if key not in seen:
+            seen.add(key)
+            terms.append(term)
+    return terms
+
+
+def _highlight_text_html(text: str, search_terms: list[str]) -> tuple[str, int]:
+    raw_text = str(text or "")
+    if not search_terms:
+        return html.escape(raw_text).replace("\n", "<br>"), 0
+
+    pattern = re.compile("|".join(re.escape(term) for term in sorted(search_terms, key=len, reverse=True)), flags=re.IGNORECASE)
+    parts: list[str] = []
+    last_end = 0
+    matches = 0
+    for match in pattern.finditer(raw_text):
+        matches += 1
+        parts.append(html.escape(raw_text[last_end:match.start()]))
+        parts.append(f"<mark>{html.escape(match.group(0))}</mark>")
+        last_end = match.end()
+    parts.append(html.escape(raw_text[last_end:]))
+    return "".join(parts).replace("\n", "<br>"), matches
+
+
+def _render_highlighted_text(title: str, text: str, search_terms: list[str], *, empty_message: str) -> None:
+    display_text = str(text or "")
+    if not display_text.strip():
+        display_text = empty_message
+
+    text_html, match_count = _highlight_text_html(display_text, search_terms)
+    if search_terms:
+        st.caption(f"{match_count} highlighted match{'es' if match_count != 1 else ''} in {title.lower()}.")
+
+    st.markdown(
+        (
+            "<div class='citation-text-panel'>"
+            f"<div class='citation-text-label'>{html.escape(title)}</div>"
+            f"<div class='citation-text-body'>{text_html}</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _format_context_value(value: object, *, prefix: str = "") -> str:
+    if pd.isna(value):
+        return "n/a"
+    try:
+        number = float(value)
+        if number.is_integer():
+            return f"{prefix}{int(number)}"
+    except Exception:
+        pass
+    return f"{prefix}{value}"
 
 
 def _default_tag_pair(df_align: pd.DataFrame, sim_col: str) -> tuple[int | None, int | None]:
@@ -986,7 +1130,38 @@ with tab_domain:
                             )
 
 with tab_drilldown:
-    st.caption("Analyze a single citation (by citation number) and compare its inspection text to the Appendix PP baseline text for its F-tag.")
+    st.caption(
+        "Compare two citations side by side using each citation's existing Appendix PP similarity score and interpretation."
+    )
+
+    st.markdown(
+        """
+        <style>
+        .citation-text-panel {
+            border: 1px solid rgba(49, 51, 63, 0.18);
+            border-radius: 0.75rem;
+            padding: 0.9rem 1rem;
+            margin-bottom: 1rem;
+        }
+        .citation-text-label {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .citation-text-body {
+            white-space: pre-wrap;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .citation-text-body mark {
+            background: #fff3a3;
+            padding: 0 0.15rem;
+            border-radius: 0.2rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     df_align = st.session_state.get("df_align")
     sim_col = st.session_state.get("sim_col", "tfidf_sim")
@@ -1010,92 +1185,105 @@ with tab_drilldown:
             "Citation number format: `<facility_id>_<deficiency_tag>_<cms_region>_<n>` "
             "(example: `75011_600_1_0`)."
         )
+        example_left, example_right = _citation_examples(df_align)
+        lookup = _citation_lookup(df_align)
 
-        def _normalize_citation_number(s: str) -> str:
-            s = str(s or "").strip()
-            parts = s.split("_")
-            if len(parts) < 4:
-                return s
+        input_left, input_right = st.columns(2)
+        with input_left:
+            citation_number_left = st.text_input(
+                "Citation number (left)",
+                value=example_left,
+                help="Format: <facility_id>_<deficiency_tag>_<cms_region>_<n> (example: 75011_600_1_0)",
+                key="drilldown_citation_number_left",
+            ).strip()
+        with input_right:
+            citation_number_right = st.text_input(
+                "Citation number (right)",
+                value=example_right,
+                help="Format: <facility_id>_<deficiency_tag>_<cms_region>_<n> (example: 75011_600_1_0)",
+                key="drilldown_citation_number_right",
+            ).strip()
 
-            def _normalize_numeric_token(tok: str) -> str:
-                tok = str(tok or "").strip()
-                if not tok:
-                    return tok
+        search_text = st.text_input(
+            "Search and highlight keywords or phrases",
+            value="",
+            placeholder="fall, smoking, pressure ulcer",
+            help="Highlights matching text in both citation panels. Separate multiple terms with commas.",
+            key="drilldown_text_search",
+        )
+        search_terms = _parse_search_terms(search_text)
 
-                # Common user inputs for tags: "F0688", "F-0688"
-                if tok.upper().startswith("F"):
-                    tok = tok[1:].lstrip("-").strip()
+        def _citation_payload(citation_number: str) -> tuple[dict[str, object] | None, str | None]:
+            if not citation_number:
+                return None, "Enter a citation number to populate this comparison panel."
 
-                try:
-                    f = float(tok)
-                    if f.is_integer():
-                        return str(int(f))
-                except Exception:
-                    pass
-
-                if tok.endswith(".0"):
-                    tok = tok[:-2]
-                if tok.isdigit():
-                    # Strip leading zeros (e.g., "0688" -> "688")
-                    return str(int(tok))
-                return tok
-
-            facility = _normalize_numeric_token(parts[0])
-            tag = _normalize_numeric_token(parts[1])
-            region = _normalize_numeric_token(parts[2])
-            n = _normalize_numeric_token(parts[3])
-            return "_".join([facility, tag, region, n])
-
-        example_id = ""
-        if "citation_id" in df_align.columns:
-            non_null_ids = df_align["citation_id"].dropna()
-            if len(non_null_ids):
-                example_id = _normalize_citation_number(str(non_null_ids.iloc[0]))
-
-        citation_number = st.text_input(
-            "Citation number",
-            value=example_id,
-            help="Format: <facility_id>_<deficiency_tag>_<cms_region>_<n> (example: 75011_600_1_0)",
-            key="drilldown_citation_number",
-        ).strip()
-
-        citation_number_norm = _normalize_citation_number(citation_number)
-        norm_to_orig: dict[str, str] = {}
-        if "citation_id" in df_align.columns:
-            for cid in df_align["citation_id"].dropna().astype(str).unique().tolist():
-                norm_to_orig[_normalize_citation_number(cid)] = cid
-
-        orig_id = norm_to_orig.get(citation_number_norm)
-        matches = df_align[df_align["citation_id"].astype(str) == orig_id] if orig_id else df_align.iloc[0:0]
-        if matches.empty:
-            st.error("Citation not found in the current computed alignment dataset.")
-        else:
-            row = matches.iloc[0]
+            row = _lookup_citation_row(df_align, citation_number, lookup)
+            if row is None:
+                return None, f"Citation `{citation_number}` was not found in the current computed alignment dataset."
 
             tag_num = row.get("deficiency_tag")
-            tag_int = int(tag_num) if pd.notna(tag_num) else None
-
-            baseline_text = None
-            if baseline_df is not None and tag_int is not None and "deficiency_tag" in baseline_df.columns:
-                match = baseline_df[pd.to_numeric(baseline_df["deficiency_tag"], errors="coerce") == tag_int]
-                if not match.empty and "text" in match.columns:
-                    baseline_text = str(match["text"].iloc[0])
-
+            tag_value = pd.to_numeric(pd.Series([tag_num]), errors="coerce").iloc[0]
+            tag_int = int(tag_value) if pd.notna(tag_value) else None
+            baseline_text = deep.baseline_text_for_tag(baseline_df, tag_int) if tag_int is not None else ""
             sim_raw = row.get(sim_col)
             sim_val = float(sim_raw) if pd.notna(sim_raw) else float("nan")
-            interpretation = similarity_interpretation(sim_val)
-            a, b = st.columns(2)
-            a.metric("Similarity Score", f"{sim_val:.3f}" if pd.notna(sim_val) else "n/a")
-            b.metric("Interpretation", interpretation)
-            st.text_area(
+
+            return (
+                {
+                    "citation_id": str(row.get("citation_id", "")),
+                    "tag": tag_int,
+                    "region": row.get("cms_region"),
+                    "severity": row.get("scope_severity"),
+                    "similarity_score": sim_val,
+                    "interpretation": similarity_interpretation(sim_val),
+                    "inspection_text": str(row.get("inspection_text", "")),
+                    "baseline_text": baseline_text,
+                },
+                None,
+            )
+
+        payload_left, error_left = _citation_payload(citation_number_left)
+        payload_right, error_right = _citation_payload(citation_number_right)
+
+        def _render_citation_panel(title: str, payload: dict[str, object] | None, error_message: str | None) -> None:
+            st.subheader(title)
+            if error_message is not None:
+                st.warning(error_message)
+                return
+            if payload is None:
+                st.info("No citation selected.")
+                return
+
+            citation_id = str(payload["citation_id"])
+            tag_label = _format_context_value(payload["tag"], prefix="F-0")
+            region_label = _format_context_value(payload["region"], prefix="Region ")
+            severity_label = _format_context_value(payload["severity"])
+
+            st.caption(f"`{citation_id}`")
+            st.caption(f"{tag_label} | {region_label} | Severity {severity_label}")
+
+            metric_left, metric_right = st.columns(2)
+            metric_left.metric(
+                "Similarity Score",
+                f"{float(payload['similarity_score']):.3f}" if pd.notna(payload["similarity_score"]) else "n/a",
+            )
+            metric_right.metric("Interpretation", str(payload["interpretation"]))
+
+            _render_highlighted_text(
                 "Inspection Text",
-                value=str(row.get("inspection_text", "")),
-                height=200,
-                key="drilldown_inspection_text",
+                str(payload["inspection_text"]),
+                search_terms,
+                empty_message="Inspection text not available for this citation.",
             )
-            st.text_area(
+            _render_highlighted_text(
                 "Appendix PP Baseline Text",
-                value=baseline_text or "Baseline text not found for this tag.",
-                height=200,
-                key="drilldown_baseline_text",
+                str(payload["baseline_text"]),
+                search_terms,
+                empty_message="Baseline text not found for this tag.",
             )
+
+        compare_left, compare_right = st.columns(2)
+        with compare_left:
+            _render_citation_panel("Left Citation", payload_left, error_left)
+        with compare_right:
+            _render_citation_panel("Right Citation", payload_right, error_right)
