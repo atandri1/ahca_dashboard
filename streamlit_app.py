@@ -1143,6 +1143,11 @@ with tab_drilldown:
             padding: 0.9rem 1rem;
             margin-bottom: 1rem;
         }
+        .citation-panel-title {
+            font-size: 1.05rem;
+            font-weight: 400;
+            margin-bottom: 0.35rem;
+        }
         .citation-text-label {
             font-size: 0.9rem;
             font-weight: 600;
@@ -1232,6 +1237,7 @@ with tab_drilldown:
                 {
                     "citation_id": str(row.get("citation_id", "")),
                     "tag": tag_int,
+                    "state": row.get("state"),
                     "region": row.get("cms_region"),
                     "severity": row.get("scope_severity"),
                     "similarity_score": sim_val,
@@ -1245,8 +1251,7 @@ with tab_drilldown:
         payload_left, error_left = _citation_payload(citation_number_left)
         payload_right, error_right = _citation_payload(citation_number_right)
 
-        def _render_citation_panel(title: str, payload: dict[str, object] | None, error_message: str | None) -> None:
-            st.subheader(title)
+        def _render_citation_panel(payload: dict[str, object] | None, error_message: str | None) -> None:
             if error_message is not None:
                 st.warning(error_message)
                 return
@@ -1255,10 +1260,15 @@ with tab_drilldown:
                 return
 
             citation_id = str(payload["citation_id"])
+            state_label = _format_context_value(payload["state"])
             tag_label = _format_context_value(payload["tag"], prefix="F-0")
             region_label = _format_context_value(payload["region"], prefix="Region ")
             severity_label = _format_context_value(payload["severity"])
 
+            st.markdown(
+                f"<div class='citation-panel-title'>{html.escape(state_label if state_label != 'n/a' else 'State unavailable')}</div>",
+                unsafe_allow_html=True,
+            )
             st.caption(f"`{citation_id}`")
             st.caption(f"{tag_label} | {region_label} | Severity {severity_label}")
 
@@ -1284,6 +1294,6 @@ with tab_drilldown:
 
         compare_left, compare_right = st.columns(2)
         with compare_left:
-            _render_citation_panel("Left Citation", payload_left, error_left)
+            _render_citation_panel(payload_left, error_left)
         with compare_right:
-            _render_citation_panel("Right Citation", payload_right, error_right)
+            _render_citation_panel(payload_right, error_right)
