@@ -50,6 +50,13 @@ st.title("AHCA Citations Dashboard")
 
 DEFAULT_PROCESSED_CSV = REPO_ROOT / "data" / "processed" / "analysis_dataset_jkl_top10tags.csv"
 DEMO_PROCESSED_CSV = REPO_ROOT / "data" / "demo" / "analysis_dataset_demo.csv"
+SIMILARITY_INTERPRETATION_ORDER = [
+    "Low Alignment",
+    "Moderate Alignment",
+    "High Alignment",
+    "Very High Alignment",
+    "Unavailable",
+]
 
 
 @st.cache_data(show_spinner=False)
@@ -309,6 +316,38 @@ def _default_tag_pair(df_align: pd.DataFrame, sim_col: str) -> tuple[int | None,
     return deep.notebook_default_tags(df_align, sim_col)
 
 
+def _alignment_search_frame(df_align: pd.DataFrame, sim_col: str) -> pd.DataFrame:
+    if df_align is None or df_align.empty or sim_col not in df_align.columns:
+        return pd.DataFrame()
+
+    work = df_align.copy()
+    work["similarity_score"] = pd.to_numeric(work[sim_col], errors="coerce")
+    work["interpretation"] = work["similarity_score"].apply(similarity_interpretation)
+
+    if "deficiency_tag" in work.columns:
+        work["deficiency_tag_numeric"] = pd.to_numeric(work["deficiency_tag"], errors="coerce").astype("Int64")
+        work["tag_label_search"] = work["deficiency_tag_numeric"].apply(
+            lambda x: f"F-0{int(x)}" if pd.notna(x) else "n/a"
+        )
+    else:
+        work["deficiency_tag_numeric"] = pd.Series(pd.array([pd.NA] * len(work), dtype="Int64"), index=work.index)
+        work["tag_label_search"] = "n/a"
+
+    if "cms_region" in work.columns:
+        work["cms_region_numeric"] = pd.to_numeric(work["cms_region"], errors="coerce").astype("Int64")
+    else:
+        work["cms_region_numeric"] = pd.Series(pd.array([pd.NA] * len(work), dtype="Int64"), index=work.index)
+
+    if "inspection_text" in work.columns:
+        work["inspection_excerpt"] = (
+            work["inspection_text"].fillna("").astype(str).map(lambda value: _excerpt(value, limit=280))
+        )
+    else:
+        work["inspection_excerpt"] = ""
+
+    return work.sort_values(["similarity_score", "citation_id"], na_position="last").reset_index(drop=True)
+
+
 with st.sidebar:
     years = _sorted_unique(df["inspection_year"]) if "inspection_year" in df.columns else []
     if years:
@@ -360,7 +399,7 @@ else:
     col4.metric("Text Available %", "n/a")
 
 
-tab_overview, tab_severity, tab_tags, tab_text, tab_time, tab_alignment, tab_tag_severity, tab_keywords, tab_domain, tab_drilldown, tab_tables = st.tabs(
+tab_overview, tab_severity, tab_tags, tab_text, tab_time, tab_alignment, tab_tag_severity, tab_keywords, tab_domain, tab_search, tab_drilldown, tab_tables = st.tabs(
     [
         "Overview",
         "Severity",
@@ -371,6 +410,7 @@ tab_overview, tab_severity, tab_tags, tab_text, tab_time, tab_alignment, tab_tag
         "Tag x Severity",
         "Keyword Comparison",
         "Domain Evidence",
+        "Citation Search",
         "Citation Analysis",
         "Tables",
     ]
@@ -1128,6 +1168,232 @@ with tab_domain:
                                 width="stretch",
                                 hide_index=True,
                             )
+
+with tab_search:
+    st.caption(
+        "Search the computed alignment dataset for citations that meet a similarity threshold or interpretation level, then narrow by tag, severity, CMS region, and state."
+    )
+    st.caption("Similarity scores run from 0 to 1. Recompute similarity in the Regulatory Alignment tab after changing sidebar filters.")
+
+    df_align = st.session_state.get("df_align")
+    sim_col = st.session_state.get("sim_col", "tfidf_sim")
+
+    if df_align is None or sim_col not in df_align.columns:
+        st.warning("Compute similarity in the Regulatory Alignment tab first to enable citation search.")
+    else:
+        search_df = _alignment_search_frame(df_align, sim_col)
+        if search_df.empty:
+            st.info("No computed similarity rows are available for the current alignment dataset.")
+        else:
+            filter_a, filter_b, filter_c = st.columns([1.1, 1.1, 1.8])
+            with filter_a:
+                apply_score_filter = st.checkbox(
+                    "Filter by maximum similarity score",
+                    value=True,
+                    key="citation_search_apply_score_filter",
+                )
+                max_similarity = st.number_input(
+                    "Maximum similarity score",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.40,
+                    step=0.01,
+                    format="%.2f",
+                    disabled=not apply_score_filter,
+                    key="citation_search_max_similarity",
+                )
+            with filter_b:
+                apply_interpretation_filter = st.checkbox(
+                    "Filter by interpretation",
+                    value=False,
+                    key="citation_search_apply_interpretation_filter",
+                )
+                selected_interpretations = st.multiselect(
+                    "Interpretation level",
+                    options=SIMILARITY_INTERPRETATION_ORDER,
+                    default=[],
+                    disabled=not apply_interpretation_filter,
+                    key="citation_search_interpretations",
+                )
+            with filter_c:
+                st.caption("Leave any condition filter blank to include all values.")
+                available_tags = [
+                    int(t)
+                    for t in search_df["deficiency_tag_numeric"].dropna().astype(int).drop_duplicates().sort_values().tolist()
+                ]
+                selected_search_tags = st.multiselect(
+                    "F-tags",
+                    options=available_tags,
+                    format_func=lambda value: f"F-0{int(value)}",
+                    key="citation_search_tags",
+                )
+
+            cond_a, cond_b, cond_c = st.columns(3)
+            with cond_a:
+                severity_options = sorted(
+                    [str(value) for value in search_df.get("scope_severity", pd.Series(dtype="object")).dropna().unique().tolist()]
+                )
+                selected_search_severities = st.multiselect(
+                    "Severity",
+                    options=severity_options,
+                    key="citation_search_severities",
+                )
+            with cond_b:
+                region_options = [
+                    int(value)
+                    for value in search_df["cms_region_numeric"].dropna().astype(int).drop_duplicates().sort_values().tolist()
+                ]
+                selected_search_regions = st.multiselect(
+                    "CMS region",
+                    options=region_options,
+                    format_func=lambda value: f"Region {int(value)}",
+                    key="citation_search_regions",
+                )
+            with cond_c:
+                state_options = sorted(
+                    [str(value) for value in search_df.get("state", pd.Series(dtype="object")).dropna().unique().tolist() if str(value).strip()]
+                )
+                selected_search_states = st.multiselect(
+                    "State",
+                    options=state_options,
+                    key="citation_search_states",
+                )
+
+            matches = search_df.copy()
+            if apply_score_filter:
+                matches = matches[matches["similarity_score"].le(float(max_similarity))]
+            if apply_interpretation_filter:
+                if not selected_interpretations:
+                    st.info("Select at least one interpretation level to apply the interpretation filter.")
+                    matches = matches.iloc[0:0]
+                else:
+                    matches = matches[matches["interpretation"].isin(selected_interpretations)]
+            if selected_search_tags:
+                matches = matches[matches["deficiency_tag_numeric"].isin(selected_search_tags)]
+            if selected_search_severities and "scope_severity" in matches.columns:
+                matches = matches[matches["scope_severity"].astype(str).isin(selected_search_severities)]
+            if selected_search_regions:
+                matches = matches[matches["cms_region_numeric"].isin(selected_search_regions)]
+            if selected_search_states and "state" in matches.columns:
+                matches = matches[matches["state"].astype(str).isin(selected_search_states)]
+
+            sort_columns = ["similarity_score"]
+            if "state" in matches.columns:
+                sort_columns.append("state")
+            if "deficiency_tag_numeric" in matches.columns:
+                sort_columns.append("deficiency_tag_numeric")
+            matches = matches.sort_values(sort_columns, na_position="last").reset_index(drop=True)
+
+            metric_a, metric_b, metric_c, metric_d = st.columns(4)
+            metric_a.metric("Matching citations", f"{len(matches):,}")
+            metric_b.metric("States represented", f"{matches['state'].nunique():,}" if "state" in matches.columns and not matches.empty else "0")
+            metric_c.metric(
+                "Tags represented",
+                f"{matches['deficiency_tag_numeric'].dropna().nunique():,}" if "deficiency_tag_numeric" in matches.columns and not matches.empty else "0",
+            )
+            metric_d.metric(
+                "Average similarity",
+                f"{float(matches['similarity_score'].mean()):.3f}" if not matches.empty else "n/a",
+            )
+
+            if matches.empty:
+                st.info("No citations match the selected search criteria.")
+            else:
+                summary_left, summary_right = st.columns(2)
+
+                if "state" in matches.columns:
+                    state_summary = (
+                        matches.dropna(subset=["state"])
+                        .groupby("state")
+                        .agg(
+                            citation_count=("citation_id", "size"),
+                            mean_similarity=("similarity_score", "mean"),
+                            lowest_similarity=("similarity_score", "min"),
+                        )
+                        .reset_index()
+                        .sort_values(["citation_count", "mean_similarity", "state"], ascending=[False, True, True])
+                    )
+                    with summary_left:
+                        st.subheader("Summary by State")
+                        st.dataframe(
+                            state_summary.rename(
+                                columns={
+                                    "state": "State",
+                                    "citation_count": "Citations",
+                                    "mean_similarity": "Mean similarity",
+                                    "lowest_similarity": "Lowest similarity",
+                                }
+                            ),
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                if "deficiency_tag_numeric" in matches.columns:
+                    tag_summary = (
+                        matches.dropna(subset=["deficiency_tag_numeric"])
+                        .groupby(["deficiency_tag_numeric", "tag_label_search"])
+                        .agg(
+                            citation_count=("citation_id", "size"),
+                            mean_similarity=("similarity_score", "mean"),
+                            states=("state", "nunique") if "state" in matches.columns else ("citation_id", "size"),
+                        )
+                        .reset_index()
+                        .sort_values(["mean_similarity", "citation_count", "deficiency_tag_numeric"], ascending=[True, False, True])
+                    )
+                    with summary_right:
+                        st.subheader("Summary by F-tag")
+                        st.dataframe(
+                            tag_summary.rename(
+                                columns={
+                                    "tag_label_search": "F-tag",
+                                    "citation_count": "Citations",
+                                    "mean_similarity": "Mean similarity",
+                                    "states": "States",
+                                }
+                            )[["F-tag", "Citations", "Mean similarity", "States"]],
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                result_columns = [
+                    "citation_id",
+                    "facility_name",
+                    "state",
+                    "city",
+                    "cms_region_numeric",
+                    "tag_label_search",
+                    "scope_severity",
+                    "inspection_date",
+                    "similarity_score",
+                    "interpretation",
+                    "inspection_excerpt",
+                ]
+                result_columns = [column for column in result_columns if column in matches.columns]
+                result_table = matches[result_columns].rename(
+                    columns={
+                        "citation_id": "Citation ID",
+                        "facility_name": "Facility",
+                        "state": "State",
+                        "city": "City",
+                        "cms_region_numeric": "CMS Region",
+                        "tag_label_search": "F-tag",
+                        "scope_severity": "Severity",
+                        "inspection_date": "Inspection Date",
+                        "similarity_score": "Similarity Score",
+                        "interpretation": "Interpretation",
+                        "inspection_excerpt": "Inspection Text Excerpt",
+                    }
+                )
+
+                st.subheader("Matching Citations")
+                st.download_button(
+                    "Download matching citations as CSV",
+                    data=result_table.to_csv(index=False).encode("utf-8"),
+                    file_name="citation_search_results.csv",
+                    mime="text/csv",
+                    key="citation_search_download",
+                )
+                st.dataframe(result_table, width="stretch", hide_index=True)
 
 with tab_drilldown:
     st.caption(
